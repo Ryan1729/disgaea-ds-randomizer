@@ -47,13 +47,14 @@ fn main() -> Res<()> {
     type Addr = u32;
     type AddrOffset = u32;
 
-    const FIRST_DSARCIDX_START: Addr = 0x000F_C600;
+    //const FIRST_DSARCIDX_START: Addr = 0x000F_C600;
+    const TABLE_DSARCIDX_START: Addr = 0x03DE_2800;
 
     mod dsarcidx {
         pub const MAGIC: &[u8] = b"DSARCIDX";
     }
 
-    rom.seek(SeekFrom::Start(u64::from(FIRST_DSARCIDX_START)))?;
+    rom.seek(SeekFrom::Start(u64::from(TABLE_DSARCIDX_START)))?;
 
     {
         let mut buffer = [0; dsarcidx::MAGIC.len()];
@@ -70,15 +71,15 @@ fn main() -> Res<()> {
         }
     }
 
-    // Advance to the end of the header 
+    // Advance to the end of the header
     let entry_count;
     {
         macro_rules! read_u32 {
             () => ({
                 let mut buffer = [0; 4];
-        
+
                 rom.read_exact(&mut buffer)?;
-        
+
                 u32::from_le_bytes(buffer)
             })
         }
@@ -91,7 +92,7 @@ dbg!(entry_count);
         // (Maybe reserved for a file type version number?)
         let _version = read_u32!();
 
-        let ids_length: AddrOffset = 
+        let ids_length: AddrOffset =
             // 2 bytes for each ID
             2 * entry_count;
 
@@ -101,22 +102,60 @@ dbg!(entry_count);
 
         rom.set_position(
             (
-                rom.position() 
+                rom.position()
                 // Add and AND to align to 4 byte boundary
                 + (4 - 1)
             ) & !(4 - 1)
         );
-        
+
     }
 
     type FileName = [u8; 40];
 
-    #[repr(C)]
-    #[derive(Debug)]
-    struct FileEntry<const BASE: Addr> {
-        file_name: FileName,
-        size: AddrOffset,
-        offset: AddrOffset,
+    macro_rules! no_padding_def {
+        // As of this writing, we plan to support only enough generics stuff to
+        // define what we actually need to.
+        (
+            struct $name: ident $(< const $base_name: ident : $base_type: ty >)? {
+                $($field_name: ident : $field_type: ty),+
+                $(,)?
+            }
+
+            $( $type_instance_suffix: tt )*
+        ) => {
+            #[repr(C)]
+            #[derive(Debug)]
+            struct $name <$(const $base_name: $base_type)?> {
+                $($field_name: $field_type),+
+            }
+
+            // Assert that there is no struct padding
+            compile_time_assert!{
+                size_of::<$name $( $type_instance_suffix )* >()
+                == {
+                    let sizes = [$(size_of::<$field_type>()),+];
+
+                    let mut sum = 0;
+                    let mut i = 0;
+                    while i < sizes.len() {
+                        sum += sizes[i];
+                        i += 1;
+                    }
+
+                    sum
+                }
+            }
+        }
+    }
+
+    no_padding_def! {
+        struct FileEntry<const BASE: Addr> {
+            file_name: FileName,
+            size: AddrOffset,
+            offset: AddrOffset,
+        }
+
+        <0>
     }
 
     impl <const BASE: Addr> FileEntry<BASE> {
@@ -129,17 +168,7 @@ dbg!(entry_count);
         }
     }
 
-    // Assert that there is no struct padding
-    compile_time_assert!{
-        size_of::<FileEntry<0>>()
-        == (
-            size_of::<FileName>()
-            + size_of::<u32>()
-            + size_of::<u32>()
-        )
-    }
-
-    let mut entries: Vec<FileEntry<FIRST_DSARCIDX_START>>
+    let mut entries: Vec<FileEntry<TABLE_DSARCIDX_START>>
         // + 1 in case we need to add an entry for
         = Vec::with_capacity((entry_count + 1) as _);
 
@@ -151,8 +180,8 @@ dbg!(entry_count);
         // SAFETY: FileEntry has no padding, and all bit values are valid.
         let entry = unsafe {
             core::mem::transmute::<
-                [u8; size_of::<FileEntry<FIRST_DSARCIDX_START>>()],
-                FileEntry<FIRST_DSARCIDX_START>,
+                [u8; size_of::<FileEntry<TABLE_DSARCIDX_START>>()],
+                FileEntry<TABLE_DSARCIDX_START>,
             >(buffer)
         };
 
@@ -165,7 +194,7 @@ dbg!(entry_count);
 
     for entry in entries {
         let after = entry.after();
-dbg!(std::str::from_utf8(&entry.file_name), after);
+println!("{:?}, addr: {:#010X}, after: {:#010X}", std::str::from_utf8(&entry.file_name), entry.addr(), after);
         if after > max_after {
             max_after = after;
         }
@@ -174,6 +203,44 @@ dbg!(std::str::from_utf8(&entry.file_name), after);
     println!(
         "{max_after:#010X}"
     );
+
+    /// Set to:
+    /// 0b1010 for Ultimate fist
+    /// 0b0101 for Ultimate sword (Yoshitsuna)
+    /// 0 for Ultimate spear (Glorious)
+    /// 0 for Ultimate bow (Galaxy)
+    type ItemFlags = u8;
+
+    // Uusually 1 to 40, some exceptions are at 41 and 42.
+    type Rank = u8;
+
+    /// 0 for fist, 1 for sword, 2 for spear,
+    /// 3 for most bows but switches to 4 on
+    /// Remote Bow, (Rank 25)
+    /// and rank 36 - 39.
+    /// 5 for Ultimate bow (Galaxy)
+    type Range = u8;
+
+    /// 0 for fist, 1 for sword, 2 for spear, 3 for bows, 4 for guns
+    type Type1 = u8;
+    /// 1 for fist, 2 for sword, 3 for spear, 4 for bows, 5 for guns
+    type Type2 = u8;
+
+    no_padding_def! {
+        struct Item {
+            pre: [u8; 0x16],
+            name: [u8; 0x10],
+            name_term: [u8; 0x1], // Always 0, seems like a nul terminator
+            description: [u8; 0x50],
+            description_term: [u8; 0x1], // Always 0, seems like a nul terminator
+            rank: Rank,
+            range: Range,
+            flags: ItemFlags,
+            type1: u8,
+            type2: u8,
+            post: [u8; 0x3],
+        }
+    }
 
     std::fs::write(output_path, rom.get_ref())
         .map_err(From::from)
