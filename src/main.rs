@@ -112,6 +112,8 @@ dbg!(entry_count);
 
     type FileName = [u8; 40];
 
+    const ZERO_FILE_NAME: FileName = [0; 40];
+
     macro_rules! no_padding_def {
         // As of this writing, we plan to support only enough generics stuff to
         // define what we actually need to.
@@ -163,6 +165,7 @@ dbg!(entry_count);
             BASE + self.offset
         }
 
+        #[allow(dead_code)]
         fn after(&self) -> Addr {
             self.addr() + self.size
         }
@@ -190,19 +193,39 @@ dbg!(entry_count);
 
     assert_eq!(entries.len(), entry_count as _);
 
-    let mut max_after: Addr = 0;
+    const ITEM_TABLE_FILE_NAME: FileName = {
+        let mut output = ZERO_FILE_NAME;
+
+        let name = b"mitem.dat";
+        let mut i = 0;
+        while i < name.len() {
+            output[i] = name[i];
+            i += 1;
+        }
+
+        output
+    };
+
+    let mut item_addr: Addr = 0;
 
     for entry in entries {
-        let after = entry.after();
-println!("{:?}, addr: {:#010X}, after: {:#010X}", std::str::from_utf8(&entry.file_name), entry.addr(), after);
-        if after > max_after {
-            max_after = after;
+        if entry.file_name == ITEM_TABLE_FILE_NAME {
+            item_addr = entry.addr();
+            break
         }
     }
 
     println!(
-        "{max_after:#010X}"
+        "item_addr: {item_addr:#010X}"
     );
+
+    if item_addr == 0 {
+        Err(format!(
+            "Could not find entry named {} starting from {:#010X}",
+            nul_terminated_as_str(&ITEM_TABLE_FILE_NAME),
+            TABLE_DSARCIDX_START,
+        ))?;
+    }
 
     /// Set to:
     /// 0b1010 for Ultimate fist
@@ -236,12 +259,27 @@ println!("{:?}, addr: {:#010X}, after: {:#010X}", std::str::from_utf8(&entry.fil
             rank: Rank,
             range: Range,
             flags: ItemFlags,
-            type1: u8,
-            type2: u8,
+            type1: Type1,
+            type2: Type2,
             post: [u8; 0x3],
         }
     }
 
     std::fs::write(output_path, rom.get_ref())
         .map_err(From::from)
+}
+
+fn nul_terminated_as_str<'slice>(
+    bytes: &'slice [u8]
+) -> &'slice str {
+    let mut first_nul_index = 0;
+    for &b in bytes {
+        if b == b'\0' {
+            break
+        }
+        first_nul_index += 1;
+    }
+
+    std::str::from_utf8(&bytes[0..first_nul_index])
+        .unwrap_or("???")
 }
