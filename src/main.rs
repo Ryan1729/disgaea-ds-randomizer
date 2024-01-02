@@ -85,7 +85,7 @@ fn main() -> Res<()> {
         }
 
         entry_count = read_u32!();
-dbg!(entry_count);
+
         assert!(entry_count > 0);
 
         // A field of unknown purpose which is always 0.
@@ -171,22 +171,32 @@ dbg!(entry_count);
         }
     }
 
+    /// SAFETY: This macro assumes that the type has no padding, and that all bit
+    /// values are valid.
+    macro_rules! unsafe_read_type {
+        ($type: ty) => ({
+            let mut buffer = [0; size_of::<$type>()];
+
+            rom.read_exact(&mut buffer)?;
+
+            // SAFETY: $type has no padding, and all bit values are valid.
+            unsafe {
+                core::mem::transmute::<
+                    [u8; size_of::<$type>()],
+                    $type,
+                >(buffer)
+            }
+        })
+    }
+
     let mut entries: Vec<FileEntry<TABLE_DSARCIDX_START>>
         // + 1 in case we need to add an entry for
         = Vec::with_capacity((entry_count + 1) as _);
 
     for _ in 0..entry_count {
-        let mut buffer = [0u8; size_of::<FileEntry<0>>()];
-
-        rom.read_exact(&mut buffer)?;
-
-        // SAFETY: FileEntry has no padding, and all bit values are valid.
-        let entry = unsafe {
-            core::mem::transmute::<
-                [u8; size_of::<FileEntry<TABLE_DSARCIDX_START>>()],
-                FileEntry<TABLE_DSARCIDX_START>,
-            >(buffer)
-        };
+        // SAFETY: `FileEntry<TABLE_DSARCIDX_START>` has no padding, and all bit
+        // values are valid.
+        let entry = unsafe_read_type!(FileEntry<TABLE_DSARCIDX_START>);
 
         entries.push(entry);
     }
@@ -227,6 +237,20 @@ dbg!(entry_count);
         ))?;
     }
 
+    no_padding_def! {
+        struct ItemTableHeader {
+            // No idea why there's the number of entries
+            // in the item table, twice.
+            count1: u32,
+            count2: u32,
+        }
+    }
+
+    rom.set_position(item_addr as _);
+
+    // SAFETY: `ItemTableHeader` has no padding, and all bit values are valid.
+    let item_table_header = unsafe_read_type!(ItemTableHeader);
+
     /// Set to:
     /// 0b1010 for Ultimate fist
     /// 0b0101 for Ultimate sword (Yoshitsuna)
@@ -263,6 +287,23 @@ dbg!(entry_count);
             type2: Type2,
             post: [u8; 0x3],
         }
+    }
+
+    // If these are different, then which is the one to use?
+    assert_eq!(item_table_header.count1, item_table_header.count2);
+    let item_count = item_table_header.count1;
+
+    let mut items = Vec::with_capacity(item_count as _);
+
+    for _ in 0..item_table_header.count1 {
+        // SAFETY: `Item` has no padding, and all bit values are valid.
+        let item = unsafe_read_type!(Item);
+
+        items.push(item);
+    }
+
+    for item in items {
+        println!("{}", nul_terminated_as_str(&item.name));
     }
 
     std::fs::write(output_path, rom.get_ref())
