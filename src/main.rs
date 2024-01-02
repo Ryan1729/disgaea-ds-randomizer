@@ -1,6 +1,4 @@
 use std::io::{
-    Seek,
-    SeekFrom,
     Read,
     Write,
 };
@@ -36,16 +34,177 @@ impl core::fmt::Display for HexSlice<'_> {
     }
 }
 
+type Addr = u32;
+// We can make this signed, with some work, if we ever actually need to do reverse
+// seeking.
+type AddrOffset = u32;
+
+mod rom {
+    use super::*;
+
+    /// A type similar to `std::io::Cursor` with the operations from that which we
+    /// need, and some additional ones not from that type, which we also need.
+    pub struct Rom<'data> {
+        data: &'data mut [u8],
+        position: Addr,
+    }
+
+    macro_rules! no_data_error_def {
+        ($name: ident) => {
+            #[derive(Debug)]
+            pub struct $name;
+
+            impl core::fmt::Display for $name {
+                fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                    write!(f, stringify!($name))
+                }
+            }
+
+            impl std::error::Error for $name {}
+        }
+    }
+
+    no_data_error_def!{BufferTooLongError}
+
+    impl Rom<'_> {
+        pub fn new(data: &mut [u8]) -> Result<Rom, BufferTooLongError> {
+            let _ = AddrOffset::try_from(data.len())
+                .map_err(|_| BufferTooLongError)?;
+            Ok(Rom {
+                data,
+                position: 0,
+            })
+        }
+
+        fn one_past_end(&self) -> Addr {
+            AddrOffset::try_from(self.data.len())
+                .expect("A Rom with a too long data field should not be possible, by construction.")
+        }
+    }
+
+    impl Rom<'_> {
+        fn remaining(&self) -> &[u8] {
+            &self.data[self.position as usize..]
+        }
+
+        pub fn position(&self) -> Addr {
+            self.position
+        }
+
+        pub fn read_u32(&mut self) -> Result<u32, ReadExactError> {
+            let mut buffer = [0; 4];
+
+            self.read_exact(&mut buffer)?;
+
+            Ok(u32::from_le_bytes(buffer))
+        }
+    }
+
+    no_data_error_def!{PresumedImpossibleIOError}
+
+    #[derive(Debug)]
+    pub enum ReadExactError {
+        OffsetTooLong(OffsetTooLongError),
+        SeekFromCurrent(SeekFromCurrentError),
+        Io(PresumedImpossibleIOError),
+    }
+
+    impl std::error::Error for ReadExactError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            use ReadExactError::*;
+            match self {
+                OffsetTooLong(e) => Some(e),
+                SeekFromCurrent(e) => Some(e),
+                Io(e) => Some(e),
+            }
+        }
+    }
+
+    impl core::fmt::Display for ReadExactError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "ReadExactError")
+        }
+    }
+
+    impl Rom<'_> {
+        pub fn read_exact(&mut self, buffer: &mut [u8]) -> Result<(), ReadExactError> {
+            let offset: AddrOffset = AddrOffset::try_from(buffer.len())
+                .map_err(|_| ReadExactError::OffsetTooLong(OffsetTooLongError))?;
+
+            let mut remaining = self.remaining();
+
+            std::io::Read::read_exact(&mut remaining, buffer)
+                // The current read_exact method for slices never errors.
+                // Adding the std::io::Error to the API just for the small
+                // chance that chnages seems undesireable.
+                .map_err(|_| ReadExactError::Io(PresumedImpossibleIOError))?;
+
+            self.seek_from_current(offset)
+                .map_err(ReadExactError::SeekFromCurrent)
+        }
+    }
+
+    no_data_error_def!{OffsetTooLongError}
+    no_data_error_def!{BadAddrError}
+
+    impl Rom<'_> {
+        pub fn seek_from_start(&mut self, addr: Addr) -> Result<(), BadAddrError> {
+            if addr >= self.one_past_end() {
+                Err(BadAddrError)
+            } else {
+                self.position = addr;
+                Ok(())
+            }
+        }
+    }
+
+    no_data_error_def!{BadOffsetError}
+
+    #[derive(Debug)]
+    pub enum SeekFromCurrentError {
+        BadOffset(BadOffsetError),
+        BadAddr(BadAddrError),
+    }
+
+    impl std::error::Error for SeekFromCurrentError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            use SeekFromCurrentError::*;
+            match self {
+                BadOffset(e) => Some(e),
+                BadAddr(e) => Some(e),
+            }
+        }
+    }
+
+    impl core::fmt::Display for SeekFromCurrentError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "SeekFromCurrentError")
+        }
+    }
+
+    impl Rom<'_> {
+        pub fn seek_from_current(&mut self, offset: AddrOffset) -> Result<(), SeekFromCurrentError> {
+            match self.position.checked_add(offset) {
+                Some(addr) => {
+                    self.seek_from_start(addr)
+                        .map_err(SeekFromCurrentError::BadAddr)
+                }
+                None => Err(SeekFromCurrentError::BadOffset(BadOffsetError)),
+            }
+        }
+    }
+}
+use rom::Rom;
+
 fn main() -> Res<()> {
     let input_path = "baserom.nds";
     let output_path = "output.nds";
 
-    let mut rom = std::io::Cursor::new(
-        std::fs::read(input_path)?
-    );
+    let mut rom_bytes = std::fs::read(input_path)?;
 
-    type Addr = u32;
-    type AddrOffset = u32;
+    let mut rom = Rom::new(
+        &mut rom_bytes[..],
+    )?;
 
     //const FIRST_DSARCIDX_START: Addr = 0x000F_C600;
     const TABLE_DSARCIDX_START: Addr = 0x03DE_2800;
@@ -54,7 +213,7 @@ fn main() -> Res<()> {
         pub const MAGIC: &[u8] = b"DSARCIDX";
     }
 
-    rom.seek(SeekFrom::Start(u64::from(TABLE_DSARCIDX_START)))?;
+    rom.seek_from_start(TABLE_DSARCIDX_START)?;
 
     {
         let mut buffer = [0; dsarcidx::MAGIC.len()];
@@ -74,39 +233,27 @@ fn main() -> Res<()> {
     // Advance to the end of the header
     let entry_count;
     {
-        macro_rules! read_u32 {
-            () => ({
-                let mut buffer = [0; 4];
-
-                rom.read_exact(&mut buffer)?;
-
-                u32::from_le_bytes(buffer)
-            })
-        }
-
-        entry_count = read_u32!();
+        entry_count = rom.read_u32()?;
 
         assert!(entry_count > 0);
 
         // A field of unknown purpose which is always 0.
         // (Maybe reserved for a file type version number?)
-        let _version = read_u32!();
+        let _version = rom.read_u32()?;
 
         let ids_length: AddrOffset =
             // 2 bytes for each ID
             2 * entry_count;
 
-        rom.seek(SeekFrom::Current(
-            i64::from(ids_length)
-        ))?;
+        rom.seek_from_current(ids_length)?;
 
-        rom.set_position(
+        rom.seek_from_start(
             (
                 rom.position()
                 // Add and AND to align to 4 byte boundary
                 + (4 - 1)
             ) & !(4 - 1)
-        );
+        )?;
 
     }
 
@@ -246,7 +393,7 @@ fn main() -> Res<()> {
         }
     }
 
-    rom.set_position(item_addr as _);
+    rom.seek_from_start(item_addr)?;
 
     // SAFETY: `ItemTableHeader` has no padding, and all bit values are valid.
     let item_table_header = unsafe_read_type!(ItemTableHeader);
@@ -293,6 +440,9 @@ fn main() -> Res<()> {
     assert_eq!(item_table_header.count1, item_table_header.count2);
     let item_count = item_table_header.count1;
 
+    // TODO: Make this into a mutable slice using std::mem::align_to
+    // so we can just directly mutate the items and have the changes
+    // saved to the output rom.
     let mut items = Vec::with_capacity(item_count as _);
 
     for _ in 0..item_table_header.count1 {
@@ -306,7 +456,7 @@ fn main() -> Res<()> {
         println!("{}", nul_terminated_as_str(&item.name));
     }
 
-    std::fs::write(output_path, rom.get_ref())
+    std::fs::write(output_path, &rom_bytes)
         .map_err(From::from)
 }
 
