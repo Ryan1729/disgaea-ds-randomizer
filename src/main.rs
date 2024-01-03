@@ -42,6 +42,22 @@ type AddrOffset = u32;
 mod rom {
     use super::*;
 
+    // There is at least one cast that assumes this to be the case.
+    compile_time_assert!{
+        usize::BITS >= Addr::BITS
+    }
+
+    /// A type large enough to hold the maximum amount of bytes that could be
+    /// in the ROM, which implies that it is also large enough to hold the
+    /// count of items in any slice of data from the ROM, including of
+    /// multi-byte types.
+    pub type SliceCount = u32;
+
+    // There is at least one cast that assumes this to be the case.
+    compile_time_assert!{
+        usize::BITS >= SliceCount::BITS
+    }
+
     /// A type similar to `std::io::Cursor` with the operations from that which we
     /// need, and some additional ones not from that type, which we also need.
     pub struct Rom<'data> {
@@ -193,6 +209,87 @@ mod rom {
             }
         }
     }
+
+    no_data_error_def!{SliceOffEndError}
+    no_data_error_def!{UnexpectedPrefixError}
+    no_data_error_def!{UnexpectedSuffixError}
+    no_data_error_def!{UnexpectedSliceLengthError}
+
+    #[derive(Debug)]
+    pub enum SliceOfError {
+        SliceOffEnd(SliceOffEndError),
+        UnexpectedPrefix(UnexpectedPrefixError),
+        UnexpectedSuffix(UnexpectedSuffixError),
+        UnexpectedSliceLength(UnexpectedSliceLengthError),
+    }
+
+    impl std::error::Error for SliceOfError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            use SliceOfError::*;
+            match self {
+                SliceOffEnd(e) => Some(e),
+                UnexpectedPrefix(e) => Some(e),
+                UnexpectedSuffix(e) => Some(e),
+                UnexpectedSliceLength(e) => Some(e),
+            }
+        }
+    }
+
+    impl core::fmt::Display for SliceOfError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "SliceOfError")
+        }
+    }
+
+    /// SAFETY: This must only be implemented on types with no padding or invalid
+    /// bit patterns.
+    pub unsafe trait PlainData {}
+
+    impl Rom<'_> {
+        // TODO? Could only take a non-zero SliceCount.
+        pub fn mut_slice_of<A: PlainData>(
+            &mut self,
+            count: SliceCount
+        ) -> Result<&mut [A], SliceOfError> {
+            use SliceOfError::*;
+
+            let count = count as usize;
+            let len = size_of::<A>() * count;
+
+            let position = self.position as usize;
+
+            let one_past_end = match position.checked_add(len) {
+                Some(one_past_end) if one_past_end <= self.data.len() => {
+                    one_past_end
+                }
+                Some(_) | None => {
+                    return Err(SliceOffEnd(SliceOffEndError));
+                }
+            };
+
+            let byte_slice = &mut self.data[position..one_past_end];
+
+            // SAFETY: This is safe given the implementor of `PlainData`
+            // upholds the documented safety requirements.
+            let (prefix, output, suffix) = unsafe {
+                byte_slice.align_to_mut()
+            };
+
+            if !prefix.is_empty() {
+                Err(UnexpectedPrefix(UnexpectedPrefixError))?;
+            }
+
+            if !suffix.is_empty() {
+                Err(UnexpectedSuffix(UnexpectedSuffixError))?;
+            }
+
+            if output.len() != count {
+                Err(UnexpectedSliceLength(UnexpectedSliceLengthError))?;
+            }
+
+            Ok(output)
+        }
+    }
 }
 use rom::Rom;
 
@@ -261,6 +358,8 @@ fn main() -> Res<()> {
 
     const ZERO_FILE_NAME: FileName = [0; 40];
 
+    /// SAFETY: This macro assumes that bit values are valid for the defined type.
+    /// So if you define a type with booleans, for example, that is your own fault!
     macro_rules! no_padding_def {
         // As of this writing, we plan to support only enough generics stuff to
         // define what we actually need to.
@@ -278,7 +377,8 @@ fn main() -> Res<()> {
                 $($field_name: $field_type),+
             }
 
-            // Assert that there is no struct padding
+            // Assert that there is no struct padding. This is a requirement of
+            // `rom::PlainData`.
             compile_time_assert!{
                 size_of::<$name $( $type_instance_suffix )* >()
                 == {
@@ -294,6 +394,10 @@ fn main() -> Res<()> {
                     sum
                 }
             }
+
+            // SAFETY: We expect callers of the macro to ensure that all bit values
+            // are valid for this type.
+            unsafe impl <$(const $base_name: $base_type)?> rom::PlainData for $name <$($base_name)?> {}
         }
     }
 
@@ -440,20 +544,16 @@ fn main() -> Res<()> {
     assert_eq!(item_table_header.count1, item_table_header.count2);
     let item_count = item_table_header.count1;
 
-    // TODO: Make this into a mutable slice using std::mem::align_to
-    // so we can just directly mutate the items and have the changes
-    // saved to the output rom.
-    let mut items = Vec::with_capacity(item_count as _);
+    {
+        let items: &mut [Item] = rom.mut_slice_of::<Item>(item_count)?;
 
-    for _ in 0..item_table_header.count1 {
-        // SAFETY: `Item` has no padding, and all bit values are valid.
-        let item = unsafe_read_type!(Item);
+        for item in items.iter() {
+            println!("{}", nul_terminated_as_str(&item.name));
+        }
 
-        items.push(item);
-    }
-
-    for item in items {
-        println!("{}", nul_terminated_as_str(&item.name));
+        // Does this do what we would expect/hope or cause a crash,
+        // when the rom is run?
+        items.reverse();
     }
 
     std::fs::write(output_path, &rom_bytes)
