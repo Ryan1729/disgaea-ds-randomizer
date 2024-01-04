@@ -1,8 +1,3 @@
-use std::io::{
-    Read,
-    Write,
-};
-
 use core::mem::size_of;
 
 macro_rules! compile_time_assert {
@@ -547,13 +542,16 @@ fn main() -> Res<()> {
     {
         let items: &mut [Item] = rom.mut_slice_of::<Item>(item_count)?;
 
-        for item in items.iter() {
-            println!("{}", nul_terminated_as_str(&item.name));
-        }
-
+        let plain_weapons_range = 0..40 * 7;
         // Does this do what we would expect/hope or cause a crash,
         // when the rom is run?
-        items.reverse();
+        for i in plain_weapons_range {
+            items[i].rank = 40;
+        }
+
+        for item in items.iter() {
+            println!("{} ({})", nul_terminated_as_str(&item.name), item.rank);
+        }
     }
 
     std::fs::write(output_path, &rom_bytes)
