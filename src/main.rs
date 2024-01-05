@@ -367,7 +367,7 @@ fn main() -> Res<()> {
             $( $type_instance_suffix: tt )*
         ) => {
             #[repr(C)]
-            #[derive(Debug)]
+            #[derive(Debug, Copy, Clone)]
             struct $name <$(const $base_name: $base_type)?> {
                 $($field_name: $field_type),+
             }
@@ -542,17 +542,30 @@ fn main() -> Res<()> {
     {
         let items: &mut [Item] = rom.mut_slice_of::<Item>(item_count)?;
 
-        let plain_weapons_range = 0..40 * 7;
         // Does this do what we would expect/hope or cause a crash,
         // when the rom is run?
-        for i in plain_weapons_range {
-            items[i].rank = 40;
+        for i in 0..7 {
+            let base = i * 40;
+            let rank_40_i = base + 39;
+
+            for ii in base..rank_40_i {
+                items[ii].name = items[rank_40_i].name;
+            }
         }
 
         for item in items.iter() {
             println!("{} ({})", nul_terminated_as_str(&item.name), item.rank);
         }
     }
+
+    rom_bytes[0x000C_6049 + 0] = b'U';
+    rom_bytes[0x000C_6049 + 1] = b'l';
+    rom_bytes[0x000C_6049 + 2] = b't';
+    rom_bytes[0x000C_6049 + 3] = b'i';
+    rom_bytes[0x000C_6049 + 4] = b'm';
+    rom_bytes[0x000C_6049 + 5] = b'u';
+    rom_bytes[0x000C_6049 + 6] = b's';
+    rom_bytes[0x000C_6049 + 7] = b'\0';
 
     std::fs::write(output_path, &rom_bytes)
         .map_err(From::from)
