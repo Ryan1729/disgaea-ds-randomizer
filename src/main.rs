@@ -521,7 +521,21 @@ fn main() -> Res<()> {
 
     no_padding_def! {
         struct Item {
-            pre: [u8; 0x16],
+            pre: [u8; 0x4],
+            // Counts upwards with gaps, some of them significant.
+            // Often the gaps are to or just past round decimal
+            // values. If the list of items is not sorted
+            // according to this, then items don't show up in shop
+            // lists etc.
+            sort_key: u16,
+            hp: u16,
+            sp: u16,
+            atk: u16,
+            def: u16,
+            int: u16,
+            spd: u16,
+            hit: u16,
+            res: u16,
             name: [u8; 0x10],
             name_term: [u8; 0x1], // Always 0, seems like a nul terminator
             description: [u8; 0x50],
@@ -544,28 +558,34 @@ fn main() -> Res<()> {
 
         // Does this do what we would expect/hope or cause a crash,
         // when the rom is run?
-        for i in 0..7 {
-            let base = i * 40;
-            let rank_40_i = base + 39;
+        items.reverse();
 
-            for ii in base..rank_40_i {
-                items[ii].name = items[rank_40_i].name;
+        // Sort the sort_key values, in a slow but easy to write way.
+        for i in 0..items.len() {
+            let mut min_index = i;
+
+            for j in i + 1..items.len() {
+                if items[j].sort_key < items[min_index].sort_key {
+                    min_index = j;
+                }
+            }
+
+            // Found an element that wasn't in the proper place
+            if min_index != i {
+                let temp = items[min_index].sort_key;
+                items[min_index].sort_key = items[i].sort_key;
+                items[i].sort_key = temp;
             }
         }
 
-        for item in items.iter() {
-            println!("{} ({})", nul_terminated_as_str(&item.name), item.rank);
+        for item in items.iter_mut() {
+            println!("{} ({}) {}", nul_terminated_as_str(&item.name), item.rank, item.sort_key);
+
+            // These item names are apparently unused?! Set these to a value that
+            // doesn't occur in the ROM to start with, to see if they ever come up.
+            item.name = *(b"ITEMNAME\0\0\0\0\0\0\0\0");
         }
     }
-
-    rom_bytes[0x000C_6049 + 0] = b'U';
-    rom_bytes[0x000C_6049 + 1] = b'l';
-    rom_bytes[0x000C_6049 + 2] = b't';
-    rom_bytes[0x000C_6049 + 3] = b'i';
-    rom_bytes[0x000C_6049 + 4] = b'm';
-    rom_bytes[0x000C_6049 + 5] = b'u';
-    rom_bytes[0x000C_6049 + 6] = b's';
-    rom_bytes[0x000C_6049 + 7] = b'\0';
 
     std::fs::write(output_path, &rom_bytes)
         .map_err(From::from)

@@ -53,3 +53,9 @@ To test that hypothesis about the text being displayed from elsewhere we can ove
 
 Performing that test by adding code to overwrite the other instance of the string "Wristband\0" with "Ultimus\0" resulted in the display updating as expected.
 
+At this point, it seems like understanding more of the pieces of the item table would be useful, since whay appears in the shop seems more complicated than expected.
+
+Many of the stats were identifiable by comparing numbers to online tables. The values being in the same order as things are displayed in game certainly helped!
+
+One value was monotonically increasing for each item, with gaps that often were at or near round decimal values. This suggests that the values were designed to be added to over time and perhaps moved around as items got added. It seemed plausible that this was the sort key for items. To try and disprove this hypothesis the values were replaced with 65535 minus the original value. This turned out to cause the store to not allow buying anything, similarly to when things were reversed. So the next thing that was tried was reversing the whole list of items and sorting the counting up values. This caused the items at the end of the list to show up in the store! That is the stats, descriptions, and icons of the items were what one would expect given the list is reversed, (Gency's Exit at the top, etc.). They were also priced in a way that seemed to fit . And the displayed names were still for the usual items (Wristband, Rock Fist, ...). It seems to make sense to call these counting up values hte sort key now.
+
