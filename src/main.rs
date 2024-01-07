@@ -592,34 +592,63 @@ fn main() -> Res<()> {
             // These item names are apparently unused?! Set these to a value that
             // doesn't occur in the ROM to start with, to see if they ever come up.
             item.name = *(b"ITEMNAME\0\0\0\0\0\0\0\0");
+
+            // Set all descriptions to '???' after the type identification to
+            // obscure things slightly, and because that matches the replaced item
+            // names.
+            for i in 0..(item.description.len() - 4) {
+                if item.description[i] == b':' {
+                    item.description[i + 1] = b'?';
+                    item.description[i + 2] = b'?';
+                    item.description[i + 3] = b'?';
+                    item.description[i + 4] = b'\0';
+                }
+            }
+            
         }
     }
 
     const STRING_TABLE_START: Addr = 0x0C_5D10;
     const STRING_TABLE_END: Addr = 0x0C_72F1;
 
-    // Replace the items strings with numbers to prove that doing this mangles things
-    let mut ones = 0x30;
-    let mut tens = 0x30;
-    let mut hundreds = 0x30;
-    for i in (STRING_TABLE_START..=(STRING_TABLE_END - 3)).step_by(4) {
-        rom_bytes[i as usize + 0] = hundreds;
-        rom_bytes[i as usize + 1] = tens;
-        rom_bytes[i as usize + 2] = ones;
-        rom_bytes[i as usize + 3] = 0;
-
-        ones += 1;
-        if ones == 0x3A {
-            ones = 0x30;
-            tens += 1;
-            if tens == 0x3A {
-                tens = 0x30;
-                hundreds += 1;
-                if hundreds == 0x3A {
-                    hundreds = 0x30;
-                    // Just wrap-around
+    // Replace the items strings with ??? because we know that will fit in every
+    // case and that's easy to do. It might be nice to replace the strings with
+    // different strings of varing lengths, but reverse-engineering how the string
+    // table is used has turned out to be difficult.
+    {
+        enum State {
+            InsertFirst,
+            InsertSecond,
+            InsertThird,
+            ScanForNul,
+        }
+        use State::*;
+        let mut state = InsertFirst;
+    
+        for i in STRING_TABLE_START..=STRING_TABLE_END {
+            let i = i as usize;
+            state = match state {
+                InsertFirst => {
+                    rom_bytes[i] = b'?';
+                    InsertSecond
                 }
-            }
+                InsertSecond => {
+                    rom_bytes[i] = b'?';
+                    InsertThird
+                }
+                InsertThird => {
+                    rom_bytes[i] = b'?';
+                    ScanForNul
+                }
+                ScanForNul => {
+                    if rom_bytes[i] == b'\0' {
+                        InsertFirst
+                    } else {
+                        rom_bytes[i] = b'\0';
+                        ScanForNul
+                    }
+                }
+            };
         }
     }
     
