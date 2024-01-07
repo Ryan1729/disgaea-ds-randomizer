@@ -595,6 +595,35 @@ fn main() -> Res<()> {
         }
     }
 
+    const STRING_TABLE_START: Addr = 0x0C_5D10;
+    const STRING_TABLE_END: Addr = 0x0C_72F1;
+
+    // Replace the items strings with numbers to prove that doing this mangles things
+    let mut ones = 0x30;
+    let mut tens = 0x30;
+    let mut hundreds = 0x30;
+    for i in (STRING_TABLE_START..=(STRING_TABLE_END - 3)).step_by(4) {
+        rom_bytes[i as usize + 0] = hundreds;
+        rom_bytes[i as usize + 1] = tens;
+        rom_bytes[i as usize + 2] = ones;
+        rom_bytes[i as usize + 3] = 0;
+
+        ones += 1;
+        if ones == 0x3A {
+            ones = 0x30;
+            tens += 1;
+            if tens == 0x3A {
+                tens = 0x30;
+                hundreds += 1;
+                if hundreds == 0x3A {
+                    hundreds = 0x30;
+                    // Just wrap-around
+                }
+            }
+        }
+    }
+    
+
     std::fs::write(output_path, &rom_bytes)
         .map_err(From::from)
 }
