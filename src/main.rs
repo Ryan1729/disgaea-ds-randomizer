@@ -521,7 +521,7 @@ fn main() -> Res<()> {
 
     no_padding_def! {
         struct Item {
-            pre: [u8; 0x4],
+            base_price: u32,
             // Counts upwards with gaps, some of them significant.
             // Often the gaps are to or just past round decimal
             // values. If the list of items is not sorted
@@ -545,7 +545,11 @@ fn main() -> Res<()> {
             flags: ItemFlags,
             type1: Type1,
             type2: Type2,
-            post: [u8; 0x3],
+            movement: u8,
+            // Set to 21 to 25 for certain weapons with a chance of poison,
+            // paralysis etc. effects.
+            effect: u8,
+            post: u8, // Always 0. Maybe just padding?
         }
     }
 
@@ -579,7 +583,8 @@ fn main() -> Res<()> {
         }
 
         for item in items.iter_mut() {
-            println!("{} ({}) {}", nul_terminated_as_str(&item.name), item.rank, item.sort_key);
+            println!("{} ({} HL) {}", nul_terminated_as_str(&item.name), item.base_price, item.sort_key);
+            assert_eq!(item.post, 0);
 
             // These item names are apparently unused?! Set these to a value that
             // doesn't occur in the ROM to start with, to see if they ever come up.
