@@ -562,7 +562,10 @@ fn main() -> Res<()> {
 
         // Does this do what we would expect/hope or cause a crash,
         // when the rom is run?
-        items.reverse();
+        let wristband_i = 0;
+        let yoshitsuna_i = 79;
+        items[yoshitsuna_i].base_price = 1;
+        items.swap(wristband_i, yoshitsuna_i);
 
         // Sort the sort_key values, in a slow but easy to write way.
         for i in 0..items.len() {
