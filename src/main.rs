@@ -632,8 +632,10 @@ fn main() -> Res<()> {
             // TODO proper spoiler file output
             println!("{} ({} HL) {}", nul_terminated_as_str(&item.name), item.base_price, item.sort_key);
 
-            // These item names are apparently unused?! Set these to a value that
-            // doesn't occur in the ROM to start with, to see if they ever come up.
+            // These item names are apparently only used for the names of item world
+            // names apparently.
+            // TODO? Something funny here? Like funny in the context of it being
+            // "BLANK world"?
             item.name = *(b"ITEMNAME\0\0\0\0\0\0\0\0");
 
             // Set all descriptions to '???' after the type identification to
