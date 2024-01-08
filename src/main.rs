@@ -1,4 +1,10 @@
+use xs::{Seed, Xs};
+
 use core::mem::size_of;
+
+mod flags;
+
+use flags::Spec;
 
 macro_rules! compile_time_assert {
     ($assertion: expr) => {
@@ -289,6 +295,15 @@ mod rom {
 use rom::Rom;
 
 fn main() -> Res<()> {
+    let Spec {
+        seed,
+        mode,
+    } = flags::spec()?;
+
+    println!("Using {} as seed", u128::from_le_bytes(seed));
+
+    let mut rng = xs::from_seed(seed);
+
     let input_path = "baserom.nds";
     let output_path = "output.nds";
 
@@ -471,10 +486,6 @@ fn main() -> Res<()> {
         }
     }
 
-    println!(
-        "item_addr: {item_addr:#010X}"
-    );
-
     if item_addr == 0 {
         Err(format!(
             "Could not find entry named {} starting from {:#010X}",
@@ -558,14 +569,46 @@ fn main() -> Res<()> {
     let item_count = item_table_header.count1;
 
     {
+        use flags::Mode::*;
         let items: &mut [Item] = rom.mut_slice_of::<Item>(item_count)?;
 
-        // Does this do what we would expect/hope or cause a crash,
-        // when the rom is run?
-        let wristband_i = 0;
-        let yoshitsuna_i = 79;
-        items[yoshitsuna_i].base_price = 1;
-        items.swap(wristband_i, yoshitsuna_i);
+        match mode {
+            ItemShuffle => {
+                xs::shuffle_with_swap(
+                    &mut rng,
+                    items.len() as u32,
+                    |i1, i2| {
+                        let i1 = i1 as usize;
+                        let i2 = i2 as usize;
+
+                        // TODO? Keep within categories to ensure all seeds are
+                        // beatable without excessive grinding? Multiple options
+                        // for how to split the categories?
+                        // TODO? Multiple ptions on how to handle prices? Say
+                        // keeping the prices of items the same as they would be
+                        // without the shuffling?
+                        // TODO Combine parts of the item structs together to make
+                        // new, less balanced items.
+
+                        // Maintain prices as they were before, so at least
+                        // something will be affordable early on.
+                        let base_price_1 = items[i1].base_price;
+                        let base_price_2 = items[i2].base_price;
+
+                        items.swap(i1, i2);
+
+                        items[i1].base_price = base_price_1;
+                        items[i2].base_price = base_price_2;
+                    },
+                )
+            }
+            YoshitsunaWristband => {
+                let wristband_i = 0;
+                let yoshitsuna_i = 79;
+                items[yoshitsuna_i].base_price = 1;
+                items.swap(wristband_i, yoshitsuna_i);
+            },
+        }
 
         // Sort the sort_key values, in a slow but easy to write way.
         for i in 0..items.len() {
@@ -586,8 +629,8 @@ fn main() -> Res<()> {
         }
 
         for item in items.iter_mut() {
+            // TODO proper spoiler file output
             println!("{} ({} HL) {}", nul_terminated_as_str(&item.name), item.base_price, item.sort_key);
-            assert_eq!(item.post, 0);
 
             // These item names are apparently unused?! Set these to a value that
             // doesn't occur in the ROM to start with, to see if they ever come up.
@@ -604,7 +647,7 @@ fn main() -> Res<()> {
                     item.description[i + 4] = b'\0';
                 }
             }
-            
+
         }
     }
 
@@ -624,7 +667,7 @@ fn main() -> Res<()> {
         }
         use State::*;
         let mut state = InsertFirst;
-    
+
         for i in STRING_TABLE_START..=STRING_TABLE_END {
             let i = i as usize;
             state = match state {
@@ -651,7 +694,7 @@ fn main() -> Res<()> {
             };
         }
     }
-    
+
 
     std::fs::write(output_path, &rom_bytes)
         .map_err(From::from)
