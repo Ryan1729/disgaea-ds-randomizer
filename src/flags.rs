@@ -1,29 +1,46 @@
 use xs::Seed;
 
 #[derive(Default)]
-pub enum Mode {
+pub enum RandomizationMode {
     #[default]
     ItemShuffle,
     YoshitsunaWristband,
     // Reminder, when updating these, update the CLI docs below!
 }
 
+#[derive(Default)]
+pub enum ItemNameMode {
+    #[default]
+    Maintain,
+    Obscure,
+    Rank,
+    // Reminder, when updating these, update the CLI docs below!
+}
+
 pub struct Spec {
     pub seed: Seed,
-    pub mode: Mode,
+    pub mode: RandomizationMode,
+    pub item_name_mode: ItemNameMode,
 }
 
 xflags::xflags! {
     cmd args {
         /// The PRNG seed to use. If not specified, one will be chosen based on the
         /// current time.
-        optional seed: String
+        optional --seed seed: String
         /// The randomization mode to use.
         /// Valid values are:
         /// * item-shuffle
         /// * yoshitsuna-wristband
         /// If not specified, item-shuffle is the default
-        optional mode: String
+        optional --mode mode: String
+        /// The item name mode to use.
+        /// Valid values are:
+        /// * maintain
+        /// * obscure
+        /// * rank
+        /// If not specified, maintain is the default
+        optional --item-name-mode item_name_mode: String
     }
 }
 
@@ -31,6 +48,7 @@ xflags::xflags! {
 pub enum Error {
     InvalidSeed(String),
     UnknownMode(String),
+    UnknownItemNameMode(String),
 }
 
 impl core::fmt::Display for Error {
@@ -39,6 +57,7 @@ impl core::fmt::Display for Error {
         match self {
             InvalidSeed(non_seed) => write!(f, "\"{non_seed}\" is not a valid seed."),
             UnknownMode(non_mode) => write!(f, "\"{non_mode}\" is not a known mode."),
+            UnknownItemNameMode(non_mode) => write!(f, "\"{non_mode}\" is not a known item name mode."),
         }
     }
 }
@@ -48,7 +67,8 @@ impl std::error::Error for Error {
         use Error::*;
         match self {
             InvalidSeed(_)
-            | UnknownMode(_) => None,
+            | UnknownMode(_)
+            | UnknownItemNameMode(_) => None,
         }
     }
 }
@@ -77,17 +97,28 @@ impl Args {
         };
 
         let mode = match self.mode.as_deref() {
-            None => Mode::default(),
-            Some("item-shuffle") => Mode::ItemShuffle,
-            Some("yoshitsuna-wristband") => Mode::YoshitsunaWristband,
+            None => RandomizationMode::default(),
+            Some("item-shuffle") => RandomizationMode::ItemShuffle,
+            Some("yoshitsuna-wristband") => RandomizationMode::YoshitsunaWristband,
             Some(s) => {
                 return Err(UnknownMode(s.to_owned()))
+            }
+        };
+
+        let item_name_mode = match self.item_name_mode.as_deref() {
+            None => ItemNameMode::default(),
+            Some("maintain") => ItemNameMode::Maintain,
+            Some("obscure") => ItemNameMode::Obscure,
+            Some("rank") => ItemNameMode::Rank,
+            Some(s) => {
+                return Err(UnknownItemNameMode(s.to_owned()))
             }
         };
 
         Ok(Spec {
             seed,
             mode,
+            item_name_mode,
         })
     }
 }
@@ -95,7 +126,10 @@ impl Args {
 type Res<A> = Result<A, Box<dyn std::error::Error>>;
 
 pub fn spec() -> Res<Spec> {
-    let args = Args::from_env()?;
+    let args = match Args::from_env() {
+        Ok(args) => args,
+        Err(err) => err.exit(),
+    };
 
     args.to_spec()
         .map_err(From::from)

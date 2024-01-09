@@ -1,10 +1,9 @@
-use xs::{Seed, Xs};
-
 use core::mem::size_of;
+use std::collections::BTreeMap;
 
 mod flags;
 
-use flags::Spec;
+use flags::{ItemNameMode, Spec};
 
 macro_rules! compile_time_assert {
     ($assertion: expr) => {
@@ -39,6 +38,56 @@ type Addr = u32;
 // We can make this signed, with some work, if we ever actually need to do reverse
 // seeking.
 type AddrOffset = u32;
+
+/// Counts upwards with gaps, some of them significant.
+/// Often the gaps are to or just past round decimal
+/// values. If the list of items is not sorted
+/// according to this, then items don't show up in shop
+/// lists etc.
+type SortKey = u16;
+
+/// SAFETY: This macro assumes that bit values are valid for the defined type.
+/// So if you define a type with booleans, for example, that is your own fault!
+macro_rules! no_padding_def {
+    // As of this writing, we plan to support only enough generics stuff to
+    // define what we actually need to.
+    (
+        $vis:vis struct $name: ident $(< const $base_name: ident : $base_type: ty >)? {
+            $($field_vis:vis $field_name: ident : $field_type: ty),+
+            $(,)?
+        }
+
+        $( $type_instance_suffix: tt )*
+    ) => {
+        #[repr(C)]
+        #[derive(Debug, Copy, Clone)]
+        $vis struct $name <$(const $base_name: $base_type)?> {
+            $($field_vis $field_name: $field_type),+
+        }
+
+        // Assert that there is no struct padding. This is a requirement of
+        // `rom::PlainData`.
+        compile_time_assert!{
+            size_of::<$name $( $type_instance_suffix )* >()
+            == {
+                let sizes = [$(size_of::<$field_type>()),+];
+
+                let mut sum = 0;
+                let mut i = 0;
+                while i < sizes.len() {
+                    sum += sizes[i];
+                    i += 1;
+                }
+
+                sum
+            }
+        }
+
+        // SAFETY: We expect callers of the macro to ensure that all bit values
+        // are valid for this type.
+        unsafe impl <$(const $base_name: $base_type)?> rom::PlainData for $name <$($base_name)?> {}
+    }
+}
 
 mod rom {
     use super::*;
@@ -291,13 +340,146 @@ mod rom {
             Ok(output)
         }
     }
+
+    no_padding_def! {
+        pub struct StringTableEntryAddr {
+            adjusted_addr: Addr
+        }
+    }
+
+    impl StringTableEntryAddr {
+        fn addr(self) -> Addr {
+            self.adjusted_addr
+            // Seems like this offset is to account for the DS ram starting at
+            // 0x0200_0000 for some reason.
+            - 0x0200_0000
+            // No idea why this offset of 0x4000 is needed, but it is.
+            + 0x4000
+        }
+
+        pub fn from_addr(addr: Addr) -> Self {
+            Self {
+                adjusted_addr: addr
+                    + 0x0200_0000
+                    - 0x4000
+            }
+        }
+    }
+
+    no_padding_def! {
+        pub struct StringTableEntry {
+            pub sort_key: SortKey,
+            pub pad: u16,
+            pub addr: StringTableEntryAddr,
+        }
+    }
+
+    pub struct StringTable<'rom> {
+        pub strings: &'rom mut [u8],
+        pub entries: &'rom mut [StringTableEntry],
+    }
+
+    no_data_error_def!{StringTableGetError}
+
+    impl StringTable<'_> {
+        pub fn get_mut(&mut self, sort_key: SortKey) -> Result<&mut [u8], StringTableGetError> {
+            self.entries
+                .iter_mut()
+                .find(|entry| entry.sort_key == sort_key)
+                .ok_or(StringTableGetError)
+                .map(|entry| {
+                    let start_index = (entry.addr.addr() - ITEM_NAME_STRINGS_START)
+                        as usize;
+
+                    // Scan forward up to the nul terminator
+                    let mut end_index = start_index;
+                    for &byte in &self.strings[start_index..] {
+                        if byte == b'\0' {
+                            break;
+                        }
+                        end_index += 1;
+                    }
+
+                    &mut self.strings[start_index..end_index]
+                })
+        }
+    }
+
+    pub const ITEM_NAME_STRINGS_START: Addr = 0x0C_5D10;
+    pub const ITEM_NAME_STRINGS_END: Addr = 0x0C_72F1;
+
+    pub const ITEM_NAME_ENTRIES_START: Addr = 0x0C_72F4;
+    pub const ITEM_NAME_ENTRIES_END: Addr = 0x0C_81E4;
+
+    impl <'rom> Rom<'rom> {
+        pub fn item_name_table(&'rom mut self) -> Result<StringTable<'rom>, SliceOfError> {
+            use SliceOfError::*;
+
+            assert!(
+                ITEM_NAME_STRINGS_START < ITEM_NAME_STRINGS_END
+                && ITEM_NAME_STRINGS_END <= ITEM_NAME_ENTRIES_START
+                && ITEM_NAME_ENTRIES_START < ITEM_NAME_ENTRIES_END
+            );
+
+            let byte_slice: &mut [u8] = &mut self.data[
+                ITEM_NAME_STRINGS_START as usize
+                ..ITEM_NAME_ENTRIES_END as usize
+            ];
+
+            let (strings, entry_bytes) = byte_slice.split_at_mut(
+                (ITEM_NAME_ENTRIES_START - ITEM_NAME_STRINGS_START) as usize
+            );
+
+            // Assert that StringTableEntry implments PlainData
+            {
+                compile_time_assert!{{
+                    const fn entry_implements_plain_data() -> bool {
+                        const fn implements_plain_data<T: PlainData>() {}
+
+                        implements_plain_data::<StringTableEntry>();
+
+                        true
+                    }
+
+                    entry_implements_plain_data()
+                }}
+            }
+
+            // SAFETY: This is safe given the implementor of `PlainData`
+            // upholds the documented safety requirements.
+            let (prefix, entries, suffix) = unsafe {
+                entry_bytes.align_to_mut()
+            };
+
+            if !prefix.is_empty() {
+                Err(UnexpectedPrefix(UnexpectedPrefixError))?;
+            }
+
+            if !suffix.is_empty() {
+                Err(UnexpectedSuffix(UnexpectedSuffixError))?;
+            }
+
+            let count = (ITEM_NAME_ENTRIES_END - ITEM_NAME_ENTRIES_START) as usize
+                / size_of::<StringTableEntry>();
+
+            if entries.len() != count {
+                Err(UnexpectedSliceLength(UnexpectedSliceLengthError))?;
+            }
+
+            Ok(StringTable {
+                strings,
+                entries,
+            })
+        }
+    }
 }
-use rom::Rom;
+use rom::{StringTableEntry, StringTableEntryAddr, Rom};
 
 fn main() -> Res<()> {
     let Spec {
         seed,
         mode,
+        item_name_mode,
     } = flags::spec()?;
 
     println!("Using {} as seed", u128::from_le_bytes(seed));
@@ -367,49 +549,6 @@ fn main() -> Res<()> {
     type FileName = [u8; 40];
 
     const ZERO_FILE_NAME: FileName = [0; 40];
-
-    /// SAFETY: This macro assumes that bit values are valid for the defined type.
-    /// So if you define a type with booleans, for example, that is your own fault!
-    macro_rules! no_padding_def {
-        // As of this writing, we plan to support only enough generics stuff to
-        // define what we actually need to.
-        (
-            struct $name: ident $(< const $base_name: ident : $base_type: ty >)? {
-                $($field_name: ident : $field_type: ty),+
-                $(,)?
-            }
-
-            $( $type_instance_suffix: tt )*
-        ) => {
-            #[repr(C)]
-            #[derive(Debug, Copy, Clone)]
-            struct $name <$(const $base_name: $base_type)?> {
-                $($field_name: $field_type),+
-            }
-
-            // Assert that there is no struct padding. This is a requirement of
-            // `rom::PlainData`.
-            compile_time_assert!{
-                size_of::<$name $( $type_instance_suffix )* >()
-                == {
-                    let sizes = [$(size_of::<$field_type>()),+];
-
-                    let mut sum = 0;
-                    let mut i = 0;
-                    while i < sizes.len() {
-                        sum += sizes[i];
-                        i += 1;
-                    }
-
-                    sum
-                }
-            }
-
-            // SAFETY: We expect callers of the macro to ensure that all bit values
-            // are valid for this type.
-            unsafe impl <$(const $base_name: $base_type)?> rom::PlainData for $name <$($base_name)?> {}
-        }
-    }
 
     no_padding_def! {
         struct FileEntry<const BASE: Addr> {
@@ -533,12 +672,7 @@ fn main() -> Res<()> {
     no_padding_def! {
         struct Item {
             base_price: u32,
-            // Counts upwards with gaps, some of them significant.
-            // Often the gaps are to or just past round decimal
-            // values. If the list of items is not sorted
-            // according to this, then items don't show up in shop
-            // lists etc.
-            sort_key: u16,
+            sort_key: SortKey,
             hp: u16,
             sp: u16,
             atk: u16,
@@ -569,7 +703,7 @@ fn main() -> Res<()> {
     let item_count = item_table_header.count1;
 
     {
-        use flags::Mode::*;
+        use flags::RandomizationMode::*;
         let items: &mut [Item] = rom.mut_slice_of::<Item>(item_count)?;
 
         match mode {
@@ -628,75 +762,159 @@ fn main() -> Res<()> {
             }
         }
 
-        for item in items.iter_mut() {
+        for item in items.iter() {
             // TODO proper spoiler file output
             println!("{} ({} HL) {}", nul_terminated_as_str(&item.name), item.base_price, item.sort_key);
-
-            // These item names are apparently only used for the names of item world
-            // names apparently.
-            // TODO? Something funny here? Like funny in the context of it being
-            // "BLANK world"?
-            item.name = *(b"ITEMNAME\0\0\0\0\0\0\0\0");
-
-            // Set all descriptions to '???' after the type identification to
-            // obscure things slightly, and because that matches the replaced item
-            // names.
-            for i in 0..(item.description.len() - 4) {
-                if item.description[i] == b':' {
-                    item.description[i + 1] = b'?';
-                    item.description[i + 2] = b'?';
-                    item.description[i + 3] = b'?';
-                    item.description[i + 4] = b'\0';
-                }
-            }
-
         }
-    }
 
-    const STRING_TABLE_START: Addr = 0x0C_5D10;
-    const STRING_TABLE_END: Addr = 0x0C_72F1;
+        match item_name_mode {
+            ItemNameMode::Maintain => {
+                // We assume that the names in the item list are the ones to use for
+                // the given sort keys.
+                let mut sort_key_to_name = BTreeMap::new();
+                for item in items.iter() {
+                    let insert_return = sort_key_to_name.insert(
+                        item.sort_key,
+                        item.name,
+                    );
 
-    // Replace the items strings with ??? because we know that will fit in every
-    // case and that's easy to do. It might be nice to replace the strings with
-    // different strings of varing lengths, but reverse-engineering how the string
-    // table is used has turned out to be difficult.
-    {
-        enum State {
-            InsertFirst,
-            InsertSecond,
-            InsertThird,
-            ScanForNul,
-        }
-        use State::*;
-        let mut state = InsertFirst;
+                    // Check that the key was not already in the map.
+                    assert_eq!(insert_return, None);
+                }
 
-        for i in STRING_TABLE_START..=STRING_TABLE_END {
-            let i = i as usize;
-            state = match state {
-                InsertFirst => {
-                    rom_bytes[i] = b'?';
-                    InsertSecond
-                }
-                InsertSecond => {
-                    rom_bytes[i] = b'?';
-                    InsertThird
-                }
-                InsertThird => {
-                    rom_bytes[i] = b'?';
-                    ScanForNul
-                }
-                ScanForNul => {
-                    if rom_bytes[i] == b'\0' {
-                        InsertFirst
-                    } else {
-                        rom_bytes[i] = b'\0';
-                        ScanForNul
+                compile_time_assert!(
+                    size_of::<StringTableEntry>()
+                    <= Addr::MAX as usize
+                );
+
+                {
+                    let mut table = rom.item_name_table()?;
+
+                    let mut char_i = 0;
+                    let mut entry_i: u32 = 0;
+                    for (sort_key, name) in sort_key_to_name {
+                        for char in name {
+                            table.strings[char_i] = char;
+                            char_i += 1;
+
+                            if char == b'\0' {
+                                break
+                            }
+                        }
+                        let entry = &mut (table.entries[entry_i as usize]);
+
+                        // The code could be changed to not assume this if needed.
+                        // We'd just rewrite the sort key for each entry.
+                        assert_eq!(entry.sort_key, sort_key);
+
+                        entry.addr = StringTableEntryAddr::from_addr(
+                            rom::ITEM_NAME_ENTRIES_START
+                            + entry_i * (size_of::<StringTableEntry>() as Addr)
+                        );
+
+                        entry_i += 1;
                     }
                 }
-            };
+
+                panic!("The maintain item name mode is broken! Pick a different one!");
+            },
+            ItemNameMode::Obscure => {
+                for item in items.iter_mut() {
+                    // These item names are apparently only used for the names of item world
+                    // names apparently.
+                    // TODO? Something funny here? Like funny in the context of it being
+                    // "BLANK world"?
+                    item.name = *(b"???\0\0\0\0\0\0\0\0\0\0\0\0\0");
+
+                    // Set all descriptions to '???' after the type identification to
+                    // obscure things slightly, and because that matches the replaced item
+                    // names.
+                    for i in 0..(item.description.len() - 4) {
+                        if item.description[i] == b':' {
+                            item.description[i + 1] = b'?';
+                            item.description[i + 2] = b'?';
+                            item.description[i + 3] = b'?';
+                            item.description[i + 4] = b'\0';
+                        }
+                    }
+                }
+
+                // Replace the items strings with ??? because we know that will fit in every
+                // case and that's easy to do. It might be nice to replace the strings with
+                // different strings of varing lengths, but reverse-engineering how the string
+                // table is used has turned out to be difficult.
+                {
+                    enum State {
+                        InsertFirst,
+                        InsertSecond,
+                        InsertThird,
+                        ScanForNul,
+                    }
+                    use State::*;
+                    let mut state = InsertFirst;
+
+                    for i in rom::ITEM_NAME_STRINGS_START..=rom::ITEM_NAME_STRINGS_END{
+                        let i = i as usize;
+                        state = match state {
+                            InsertFirst => {
+                                rom_bytes[i] = b'?';
+                                InsertSecond
+                            }
+                            InsertSecond => {
+                                rom_bytes[i] = b'?';
+                                InsertThird
+                            }
+                            InsertThird => {
+                                rom_bytes[i] = b'?';
+                                ScanForNul
+                            }
+                            ScanForNul => {
+                                if rom_bytes[i] == b'\0' {
+                                    InsertFirst
+                                } else {
+                                    rom_bytes[i] = b'\0';
+                                    ScanForNul
+                                }
+                            }
+                        };
+                    }
+                }
+            },
+            ItemNameMode::Rank => {
+                // We assume the rank in the items array is the correct one
+                let mut sort_key_to_rank = BTreeMap::new();
+                for item in items.iter() {
+                    let insert_return = sort_key_to_rank.insert(
+                        item.sort_key,
+                        item.rank,
+                    );
+
+                    // Check that the key was not already in the map.
+                    assert_eq!(insert_return, None);
+                }
+
+                {
+                    let mut table = rom.item_name_table()?;
+
+                    for (sort_key, rank) in sort_key_to_rank {
+                        let entry: &mut [u8] = table.get_mut(sort_key)?;
+
+                        assert!(entry.len() >= 3);
+                        entry[0] = b'r';
+                        entry[1] = b'0' + (rank / 10);
+                        entry[2] = b'0' + (rank % 10);
+                        for i in 3..entry.len() {
+                            entry[i] = b'\0';
+                        }
+                    }
+                }
+
+                // We can leave the names in the item list alone for now, so players
+                // can look up what the item name is if they want. If we add merged
+                // items then we'll want to revisit this case
+            },
         }
     }
-
 
     std::fs::write(output_path, &rom_bytes)
         .map_err(From::from)
