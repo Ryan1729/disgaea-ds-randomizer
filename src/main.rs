@@ -117,7 +117,7 @@ mod rom {
 
     macro_rules! no_data_error_def {
         ($name: ident) => {
-            #[derive(Debug)]
+            #[derive(Clone, Copy, Debug)]
             pub struct $name;
 
             impl core::fmt::Display for $name {
@@ -265,7 +265,7 @@ mod rom {
     no_data_error_def!{UnexpectedSuffixError}
     no_data_error_def!{UnexpectedSliceLengthError}
 
-    #[derive(Debug)]
+    #[derive(Clone, Copy, Debug)]
     pub enum SliceOfError {
         SliceOffEnd(SliceOffEndError),
         UnexpectedPrefix(UnexpectedPrefixError),
@@ -379,6 +379,26 @@ mod rom {
         pub entries: &'rom mut [StringTableEntry],
     }
 
+    impl core::fmt::Debug for StringTable<'_> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            if f.alternate() {
+                let mut list = f.debug_list();
+    
+                for entry in self.entries.iter() {
+                    list.entry(&self.get(entry.sort_key));
+                }
+    
+                list.finish()
+            } else {
+                f.debug_struct("StringTable")
+                .field("strings", &self.strings)
+                .field("entries", &self.entries)
+                .finish()
+            }
+        }
+    }
+
+
     no_data_error_def!{StringTableGetError}
 
     impl StringTable<'_> {
@@ -401,6 +421,38 @@ mod rom {
                     }
 
                     &mut self.strings[start_index..end_index]
+                })
+        }
+
+        // TODO? A test ensuring get and get_mut stay in sync?
+        pub fn get(& self, sort_key: SortKey) -> Result<& [u8], StringTableGetError> {
+            self.entries
+                .iter()
+                .find(|entry| entry.sort_key == sort_key)
+                .ok_or(StringTableGetError)
+                .map(|entry| {
+                    let start_index = (entry.addr.addr() - ITEM_NAME_STRINGS_START)
+                        as usize;
+
+                    assert!(
+                        start_index < self.strings.len(),
+                        "{:#010X} @ {:#010X}({:#010X}) -> {:#010X}",
+                        entry.sort_key,
+                        entry.addr.addr(),
+                        entry.addr.adjusted_addr,
+                        start_index,
+                    );
+
+                    // Scan forward up to the nul terminator
+                    let mut end_index = start_index;
+                    for &byte in &self.strings[start_index..] {
+                        if byte == b'\0' {
+                            break;
+                        }
+                        end_index += 1;
+                    }
+
+                    & self.strings[start_index..end_index]
                 })
         }
     }
@@ -764,7 +816,12 @@ fn main() -> Res<()> {
 
         for item in items.iter() {
             // TODO proper spoiler file output
-            println!("{} ({} HL) {}", nul_terminated_as_str(&item.name), item.base_price, item.sort_key);
+            println!(
+                "{} ({} HL) {}",
+                nul_terminated_as_str(&item.name),
+                item.base_price,
+                item.sort_key,
+            );
         }
 
         match item_name_mode {
@@ -788,13 +845,14 @@ fn main() -> Res<()> {
                 );
 
                 {
-                    let mut table = rom.item_name_table()?;
+                    let table = rom.item_name_table()?;
 
-                    let mut char_i = 0;
+                    let mut char_i: u32 = 0;
                     let mut entry_i: u32 = 0;
                     for (sort_key, name) in sort_key_to_name {
+                        let start_char_i = char_i;
                         for char in name {
-                            table.strings[char_i] = char;
+                            table.strings[char_i as usize] = char;
                             char_i += 1;
 
                             if char == b'\0' {
@@ -808,15 +866,13 @@ fn main() -> Res<()> {
                         assert_eq!(entry.sort_key, sort_key);
 
                         entry.addr = StringTableEntryAddr::from_addr(
-                            rom::ITEM_NAME_ENTRIES_START
-                            + entry_i * (size_of::<StringTableEntry>() as Addr)
+                            rom::ITEM_NAME_STRINGS_START
+                            + start_char_i
                         );
 
                         entry_i += 1;
                     }
                 }
-
-                panic!("The maintain item name mode is broken! Pick a different one!");
             },
             ItemNameMode::Obscure => {
                 for item in items.iter_mut() {
