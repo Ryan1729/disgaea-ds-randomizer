@@ -1,12 +1,23 @@
 use xs::Seed;
 
 #[derive(Default)]
-pub enum RandomizationMode {
+pub enum ItemShuffleKind {
     #[default]
-    ItemShuffle,
+    All,
+    NonInitialShop,
+}
+
+pub enum RandomizationMode {
+    ItemShuffle(ItemShuffleKind),
     YoshitsunaWristband,
     HorseWienerWristband,
     // Reminder, when updating these, update the CLI docs below!
+}
+
+impl Default for RandomizationMode {
+    fn default() -> Self {
+        Self::ItemShuffle(<_>::default())
+    }
 }
 
 #[derive(Default)]
@@ -100,7 +111,8 @@ impl Args {
 
         let mode = match self.mode.as_deref() {
             None => RandomizationMode::default(),
-            Some("item-shuffle") => RandomizationMode::ItemShuffle,
+            Some("item-shuffle") => RandomizationMode::ItemShuffle(ItemShuffleKind::All),
+            Some("item-shuffle-after-start") => RandomizationMode::ItemShuffle(ItemShuffleKind::NonInitialShop),
             Some("yoshitsuna-wristband") => RandomizationMode::YoshitsunaWristband,
             Some("horse-wiener-wristband") => RandomizationMode::HorseWienerWristband,
             Some(s) => {

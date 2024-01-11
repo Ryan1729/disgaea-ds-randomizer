@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 mod flags;
 
-use flags::{ItemNameMode, Spec};
+use flags::{ItemShuffleKind, ItemNameMode, Spec};
 
 macro_rules! compile_time_assert {
     ($assertion: expr) => {
@@ -759,13 +759,95 @@ fn main() -> Res<()> {
         let items: &mut [Item] = rom.mut_slice_of::<Item>(item_count)?;
 
         match mode {
-            ItemShuffle => {
+            ItemShuffle(kind) => {
+                use ItemShuffleKind::*;
+                fn identity_mapper(i: u32) -> usize {
+                    i as usize
+                }
+
+                const INITIAL_SHOP_INDEXES: [u32; 35] = [
+                    // Weapons
+                    0 * 40,
+                    0 * 40 + 1, 
+                    0 * 40 + 2,
+                    1 * 40,
+                    1 * 40 + 1, 
+                    1 * 40 + 2,
+                    2 * 40,
+                    2 * 40 + 1, 
+                    2 * 40 + 2,
+                    3 * 40,
+                    3 * 40 + 1, 
+                    3 * 40 + 2,
+                    4 * 40,
+                    4 * 40 + 1,
+                    4 * 40 + 2,
+                    5 * 40,
+                    5 * 40 + 1,
+                    5 * 40 + 2,
+                    6 * 40,
+                    6 * 40 + 1,
+                    6 * 40 + 2,
+                    7 * 40,
+                    7 * 40 + 1,
+                    7 * 40 + 2,
+                    // Armor
+                    8 * 40,
+                    8 * 40 + 1,
+                    8 * 40 + 2,
+                    // Use items
+                    // HP
+                    439,
+                    439 + 1,
+                    439 + 2,
+                    // SP
+                    449,
+                    449 + 1,
+                    449 + 2,
+                    // Faerie Dust
+                    470,
+                    // Hands
+                    471
+                ];
+
+                fn non_initial_shop_mapper(mut index: u32) -> usize {
+                    while {
+                        let mut is_initial_shop = false;
+                        for &i in INITIAL_SHOP_INDEXES.iter() {
+                            if i == index {
+                                is_initial_shop = true;
+                                break
+                            }
+                        }
+                        is_initial_shop
+                    } {
+                        index += 1;
+                    }
+
+                    index as usize
+                }
+
+                let len = match kind {
+                    All =>
+                        items.len() as u32,
+                    NonInitialShop => 
+                        (items.len() - INITIAL_SHOP_INDEXES.len()) as u32,
+                }; 
+
                 xs::shuffle_with_swap(
                     &mut rng,
-                    items.len() as u32,
+                    len,
                     |i1, i2| {
-                        let i1 = i1 as usize;
-                        let i2 = i2 as usize;
+                        let (i1, i2) = match kind {
+                            All => (
+                                identity_mapper(i1),
+                                identity_mapper(i2),
+                            ),
+                            NonInitialShop => (
+                                non_initial_shop_mapper(i1),
+                                non_initial_shop_mapper(i2),
+                            ),
+                        };
 
                         // TODO? Keep within categories to ensure all seeds are
                         // beatable without excessive grinding? Multiple options
