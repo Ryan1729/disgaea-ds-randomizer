@@ -794,6 +794,12 @@ fn main() -> Res<()> {
                 items[yoshitsuna_i].base_price = 1;
                 items.swap(wristband_i, yoshitsuna_i);
             },
+            HorseWienerWristband => {
+                let wristband_i = 0;
+                let horse_wiener_i = 419;
+                items[horse_wiener_i].base_price = 1;
+                items.swap(wristband_i, horse_wiener_i);
+            },
         }
 
         // Sort the sort_key values, in a slow but easy to write way.

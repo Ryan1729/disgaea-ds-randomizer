@@ -5,6 +5,7 @@ pub enum RandomizationMode {
     #[default]
     ItemShuffle,
     YoshitsunaWristband,
+    HorseWienerWristband,
     // Reminder, when updating these, update the CLI docs below!
 }
 
@@ -32,6 +33,7 @@ xflags::xflags! {
         /// Valid values are:
         /// * item-shuffle
         /// * yoshitsuna-wristband
+        /// * horse-wiener-wristband
         /// If not specified, item-shuffle is the default
         optional --mode mode: String
         /// The item name mode to use.
@@ -100,6 +102,7 @@ impl Args {
             None => RandomizationMode::default(),
             Some("item-shuffle") => RandomizationMode::ItemShuffle,
             Some("yoshitsuna-wristband") => RandomizationMode::YoshitsunaWristband,
+            Some("horse-wiener-wristband") => RandomizationMode::HorseWienerWristband,
             Some(s) => {
                 return Err(UnknownMode(s.to_owned()))
             }
