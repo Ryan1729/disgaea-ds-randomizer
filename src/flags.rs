@@ -1,5 +1,7 @@
 use xs::Seed;
 
+use std::path::PathBuf;
+
 #[derive(Default)]
 pub enum ItemShuffleKind {
     #[default]
@@ -33,6 +35,8 @@ pub struct Spec {
     pub seed: Seed,
     pub mode: RandomizationMode,
     pub item_name_mode: ItemNameMode,
+    pub input_path: PathBuf,
+    pub output_path: PathBuf,
 }
 
 xflags::xflags! {
@@ -43,6 +47,7 @@ xflags::xflags! {
         /// The randomization mode to use.
         /// Valid values are:
         /// * item-shuffle
+        /// * item-shuffle-after-start
         /// * yoshitsuna-wristband
         /// * horse-wiener-wristband
         /// If not specified, item-shuffle is the default
@@ -54,6 +59,10 @@ xflags::xflags! {
         /// * rank
         /// If not specified, maintain is the default
         optional --item-name-mode item_name_mode: String
+        /// The path to the baserom to randomize.
+        /// If not specified, "baserom.nds" is the default
+        optional --input-path input_path: String
+        optional --output-path output_path: String
     }
 }
 
@@ -130,10 +139,22 @@ impl Args {
             }
         };
 
+        let input_path = PathBuf::from(match self.input_path {
+            None => "baserom.nds".to_owned(),
+            Some(input_path) => input_path,
+        });
+
+        let output_path = PathBuf::from(match self.output_path {
+            None => "output.nds".to_owned(),
+            Some(output_path) => output_path,
+        });
+
         Ok(Spec {
             seed,
             mode,
             item_name_mode,
+            input_path,
+            output_path,
         })
     }
 }

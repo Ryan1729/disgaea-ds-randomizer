@@ -532,14 +532,13 @@ fn main() -> Res<()> {
         seed,
         mode,
         item_name_mode,
+        input_path,
+        output_path,
     } = flags::spec()?;
 
     println!("Using {} as seed", u128::from_le_bytes(seed));
 
     let mut rng = xs::from_seed(seed);
-
-    let input_path = "baserom.nds";
-    let output_path = "output.nds";
 
     let mut rom_bytes = std::fs::read(input_path)?;
 
